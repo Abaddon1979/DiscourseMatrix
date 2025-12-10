@@ -40,7 +40,7 @@ def proxy(path):
         headers=headers,
         data=body,
         params=request.args,
-        timeout=30,
+        timeout=60,
     )
 
     # Log response

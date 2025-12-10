@@ -241,6 +241,14 @@ after_initialize do
 
           full_body = "[#{sender}]: #{body}"
 
+          # Ensure bridge user is a member of the channel
+          if !channel.memberships.exists?(user_id: bridge_user.id)
+            ::Chat::Publisher.publish_new_channel_membership(
+              channel,
+              channel.add(bridge_user),
+            )
+          end
+
           creator =
             ::Chat::CreateMessage.call(
               guardian: bridge_user.guardian,
