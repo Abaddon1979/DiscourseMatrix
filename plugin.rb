@@ -210,19 +210,34 @@ after_initialize do
 
           body = content["body"].to_s
           sender = event["sender"] # e.g. "@alice:example.com"
+          event_id = event["event_id"]
+
+          Rails.logger.info "[discourse-matrix] handling Matrix event #{event_id} from #{sender} in #{room_id}: #{body.inspect}"
 
           # Avoid echo loop: ignore messages sent by the Matrix bot user itself
           bridge_mx_userid = SiteSetting.matrix_bot_user_id.presence
-          return if bridge_mx_userid && sender == bridge_mx_userid
+          if bridge_mx_userid && sender == bridge_mx_userid
+            Rails.logger.info "[discourse-matrix] skipping event #{event_id} because sender is the bot user #{bridge_mx_userid}"
+            return
+          end
 
           mapping = ::DiscourseMatrix::Bridge.find_mapping_for_room_id(room_id)
-          return if mapping.blank?
+          if mapping.blank?
+            Rails.logger.info "[discourse-matrix] no mapping found for room #{room_id}; skipping event #{event_id}"
+            return
+          end
 
           channel = ::Chat::Channel.find_by(id: mapping["chat_channel_id"].to_i)
-          return if channel.blank?
+          if channel.blank?
+            Rails.logger.warn "[discourse-matrix] mapping found for room #{room_id} but chat channel #{mapping["chat_channel_id"]} is missing"
+            return
+          end
 
           bridge_user = ::DiscourseMatrix::Bridge.bridge_user
-          return if bridge_user.blank?
+          if bridge_user.blank?
+            Rails.logger.warn "[discourse-matrix] bridge user not found; cannot create chat message for event #{event_id}"
+            return
+          end
 
           full_body = "[#{sender}]: #{body}"
 
@@ -236,7 +251,9 @@ after_initialize do
             )
 
           if creator.failure?
-            Rails.logger.warn "[discourse-matrix] failed to create chat message from Matrix: #{creator.inspect_steps}"
+            Rails.logger.warn "[discourse-matrix] failed to create chat message from Matrix event #{event_id}: #{creator.inspect_steps}"
+          else
+            Rails.logger.info "[discourse-matrix] created chat message from Matrix event #{event_id} in channel #{channel.id} as user #{bridge_user.username}"
           end
         rescue => e
           Rails.logger.warn "[discourse-matrix] error handling Matrix event: #{e.class} #{e.message}"
