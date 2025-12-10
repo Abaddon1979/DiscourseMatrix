@@ -146,7 +146,16 @@ after_initialize do
           message = ::Chat::Message.find_by(id: args[:message_id])
           return if message.blank?
 
-          channel = message.channel
+          # Different Discourse chat versions expose either `channel` or `chat_channel`
+          channel =
+            if message.respond_to?(:channel)
+              message.channel
+            else
+              message.chat_channel
+            end
+
+          return if channel.blank?
+
           user = message.user
           bridge_user = ::DiscourseMatrix::Bridge.bridge_user
           return if bridge_user.blank?
