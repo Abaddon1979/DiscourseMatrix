@@ -116,6 +116,8 @@ after_initialize do
           http.use_ssl = uri.scheme == "https"
           http.open_timeout = 10
           http.read_timeout = 10
+          
+          req = req_class.new(uri.request_uri)
           req["Authorization"] = "Bearer #{@access_token}" if @access_token.present?
 
           if @extra_header_name && @extra_header_value
