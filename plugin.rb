@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-# name: discourse-matrix-bridge
+# name: Discourse Matrix Bridge
 # about: Bridge Discourse Chat channels with Matrix Synapse rooms
 # version: 0.1
 # authors: ChatGPT
@@ -112,7 +112,10 @@ after_initialize do
               raise ArgumentError, "Unsupported HTTP method: #{method}"
             end
 
-          req = req_class.new(uri.request_uri)
+          http = Net::HTTP.new(uri.host, uri.port)
+          http.use_ssl = uri.scheme == "https"
+          http.open_timeout = 10
+          http.read_timeout = 10
           req["Authorization"] = "Bearer #{@access_token}" if @access_token.present?
 
           if @extra_header_name && @extra_header_value
@@ -181,34 +184,70 @@ after_initialize do
         def execute(args)
           return if !SiteSetting.matrix_bridge_enabled
 
-          client = ::DiscourseMatrix::Bridge.matrix_client
-          since = PluginStore.get(::DiscourseMatrix::PLUGIN_NAME, "matrix_sync_since")
-          resp = client.sync(since: since)
+          # Loop for ~55 seconds to keep the bridge active between 1-minute job schedules
+          start_time = Time.now
+          while Time.now - start_time < 55
+            begin
+                client = ::DiscourseMatrix::Bridge.matrix_client
+                since = PluginStore.get(::DiscourseMatrix::PLUGIN_NAME, "matrix_sync_since")
+                
+                # User requested 5s sync time
+                resp = client.sync(since: since, timeout_ms: 5000)
 
-          next_batch = resp["next_batch"]
-          rooms = resp.dig("rooms", "join") || {}
+                next_batch = resp["next_batch"]
+                rooms = resp.dig("rooms", "join") || {}
 
-          rooms.each do |room_id, room_data|
-            timeline = room_data.dig("timeline", "events") || []
-            timeline.each do |event|
-              handle_event(room_id, event)
+                rooms.each do |room_id, room_data|
+                    timeline = room_data.dig("timeline", "events") || []
+                    timeline.each do |event|
+                    handle_event(room_id, event)
+                    end
+                end
+
+                if next_batch
+                    PluginStore.set(::DiscourseMatrix::PLUGIN_NAME, "matrix_sync_since", next_batch)
+                end
+            rescue => e
+                Rails.logger.warn("[discourse-matrix] Sync loop error: #{e.message}")
+                sleep 5 # Backoff slightly on error
             end
-          end
-
-          if next_batch
-            PluginStore.set(::DiscourseMatrix::PLUGIN_NAME, "matrix_sync_since", next_batch)
+            
+            # Tiny sleep to verify we don't hot-loop if sync returns instantly
+            sleep 0.5
           end
         end
 
         private
 
         def handle_event(room_id, event)
-          return unless event["type"] == "m.room.message"
+          return unless ["m.room.message", "m.sticker"].include?(event["type"])
 
           content = event["content"] || {}
-          return unless content["msgtype"] == "m.text"
+          msgtype = content["msgtype"]
+          return unless ["m.text", "m.image", "m.file", "m.video"].include?(msgtype)
 
           body = content["body"].to_s
+          
+          # Handle Media (Images/GIFs)
+          if msgtype == "m.image" || msgtype == "m.file" || msgtype == "m.video"
+            mxc_url = content["url"]
+            if mxc_url =~ /^mxc:\/\/(.+)\/(.+)$/
+              server_name = $1
+              media_id = $2
+              # Construct public HTTPS URL for the media
+              # We use the server_name from the MXC URI assuming it serves HTTPS
+              http_url = "https://#{server_name}/_matrix/media/v3/download/#{server_name}/#{media_id}"
+              
+              # Use Markdown format for image preview
+              body = "![#{body}](#{http_url})" 
+              
+              # If it's a file/video that might not onebox well, we can just append the link
+              if msgtype != "m.image"
+                 body = "[#{content['body']}](#{http_url})"
+              end
+            end
+          end
+          
           sender = event["sender"] # e.g. "@alice:example.com"
           event_id = event["event_id"]
 
@@ -218,7 +257,7 @@ after_initialize do
           Rails.logger.info "[discourse-matrix] Processing event: sender=#{sender}, bridge_bot_id=#{bridge_mx_userid}"
           
           # Avoid echo loop: ignore messages sent by the Matrix bot user itself
-          if bridge_mx_userid && sender == bridge_mx_userid
+          if bridge_mx_userid && sender.strip == bridge_mx_userid.strip
             Rails.logger.info "[discourse-matrix] skipping event #{event_id} because sender is the bot user #{bridge_mx_userid}"
             return
           end
