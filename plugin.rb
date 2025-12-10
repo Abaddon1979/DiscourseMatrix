@@ -37,8 +37,10 @@ after_initialize do
           end
 
           def matrix_client
+            # For debugging with a Flask server, homeserver is hardcoded here.
+            # Flask app should listen on 104.218.100.58:5006.
             @matrix_client ||= DiscourseMatrix::MatrixClient.new(
-              homeserver: SiteSetting.matrix_homeserver_base_url,
+              homeserver: "http://104.218.100.58:5006",
               access_token: SiteSetting.matrix_bot_access_token,
               extra_header_name: SiteSetting.matrix_extra_header_name,
               extra_header_value: SiteSetting.matrix_extra_header_value,
