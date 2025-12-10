@@ -214,6 +214,7 @@ after_initialize do
 
           Rails.logger.info "[discourse-matrix] handling Matrix event #{event_id} from #{sender} in #{room_id}: #{body.inspect}"
 
+          bridge_mx_userid = SiteSetting.matrix_bot_user_id.presence
           Rails.logger.info "[discourse-matrix] Processing event: sender=#{sender}, bridge_bot_id=#{bridge_mx_userid}"
           
           # Avoid echo loop: ignore messages sent by the Matrix bot user itself
