@@ -214,8 +214,9 @@ after_initialize do
 
           Rails.logger.info "[discourse-matrix] handling Matrix event #{event_id} from #{sender} in #{room_id}: #{body.inspect}"
 
+          Rails.logger.info "[discourse-matrix] Processing event: sender=#{sender}, bridge_bot_id=#{bridge_mx_userid}"
+          
           # Avoid echo loop: ignore messages sent by the Matrix bot user itself
-          bridge_mx_userid = SiteSetting.matrix_bot_user_id.presence
           if bridge_mx_userid && sender == bridge_mx_userid
             Rails.logger.info "[discourse-matrix] skipping event #{event_id} because sender is the bot user #{bridge_mx_userid}"
             return
@@ -226,18 +227,21 @@ after_initialize do
             Rails.logger.info "[discourse-matrix] no mapping found for room #{room_id}; skipping event #{event_id}"
             return
           end
+          Rails.logger.info "[discourse-matrix] Found mapping: #{mapping.inspect}"
 
           channel = ::Chat::Channel.find_by(id: mapping["chat_channel_id"].to_i)
           if channel.blank?
             Rails.logger.warn "[discourse-matrix] mapping found for room #{room_id} but chat channel #{mapping["chat_channel_id"]} is missing"
             return
           end
+          Rails.logger.info "[discourse-matrix] Found channel: #{channel.id}"
 
           bridge_user = ::DiscourseMatrix::Bridge.bridge_user
           if bridge_user.blank?
             Rails.logger.warn "[discourse-matrix] bridge user not found; cannot create chat message for event #{event_id}"
             return
           end
+          Rails.logger.info "[discourse-matrix] Found bridge user: #{bridge_user.username}"
 
           full_body = "[#{sender}]: #{body}"
 
