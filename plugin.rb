@@ -247,11 +247,21 @@ after_initialize do
           full_body = "[#{sender}]: #{body}"
 
           # Ensure bridge user is a member of the channel
-          if !channel.memberships.exists?(user_id: bridge_user.id)
-            ::Chat::Publisher.publish_new_channel_membership(
-              channel,
-              channel.add(bridge_user),
-            )
+          # Category channels (public) are handled differently than DM/Private channels
+          is_category_channel = channel.is_a?(::Chat::CategoryChannel)
+          
+          if !is_category_channel && !channel.memberships.exists?(user_id: bridge_user.id)
+             ::Chat::Publisher.publish_new_channel_membership(
+               channel,
+               channel.add(bridge_user),
+             )
+          elsif is_category_channel
+             # Category channels usually don't have explicit join/leave logic for 'membership'
+             # in the same way, or it's handled via allowing the user to create messages.
+             # We just ensure the user follows the channel.
+             if defined?(::Chat::Membership) && !::Chat::Membership.exists?(user_id: bridge_user.id, chat_channel_id: channel.id)
+               ::Chat::Membership.create(user_id: bridge_user.id, chat_channel_id: channel.id, following: true)
+             end
           end
 
           creator =
