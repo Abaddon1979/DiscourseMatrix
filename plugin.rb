@@ -1,0 +1,243 @@
+# frozen_string_literal: true
+
+# name: discourse-matrix-bridge
+# about: Bridge Discourse Chat channels with Matrix Synapse rooms
+# version: 0.1
+# authors: ChatGPT
+# url: https://example.com/discourse-matrix-bridge
+
+enabled_site_setting :matrix_bridge_enabled
+
+require "net/http"
+require "uri"
+require "json"
+require "cgi"
+require "securerandom"
+
+module ::DiscourseMatrix
+  PLUGIN_NAME = "discourse-matrix-bridge"
+end
+
+after_initialize do
+  if defined?(::Chat)
+    module ::DiscourseMatrix
+      class Bridge
+        class << self
+          def mappings
+            raw = SiteSetting.matrix_bridge_mappings.presence || "[]"
+            JSON.parse(raw) rescue []
+          end
+
+          def find_mapping_for_channel_id(channel_id)
+            mappings.find { |m| m["chat_channel_id"].to_i == channel_id.to_i }
+          end
+
+          def find_mapping_for_room_id(room_id)
+            mappings.find { |m| m["matrix_room_id"] == room_id }
+          end
+
+          def matrix_client
+            @matrix_client ||= DiscourseMatrix::MatrixClient.new(
+              homeserver: SiteSetting.matrix_homeserver_base_url,
+              access_token: SiteSetting.matrix_bot_access_token,
+              extra_header_name: SiteSetting.matrix_extra_header_name,
+              extra_header_value: SiteSetting.matrix_extra_header_value,
+            )
+          end
+
+          def bridge_user
+            @bridge_user ||= User.find_by(username: SiteSetting.matrix_bridge_discourse_username)
+          end
+
+          def enqueue_matrix_send(message, channel, user)
+            return if !SiteSetting.matrix_bridge_enabled
+
+            mapping = find_mapping_for_channel_id(channel.id)
+            return if mapping.blank?
+
+            # Avoid echo-loop: do not send messages that were posted by the bridge user itself
+            return if user&.id.present? && bridge_user&.id.present? && user.id == bridge_user.id
+
+            Jobs.enqueue(
+              :matrix_send_message,
+              matrix_room_id: mapping["matrix_room_id"],
+              message_id: message.id,
+            )
+          end
+        end
+      end
+
+      class MatrixClient
+        def initialize(homeserver:, access_token:, extra_header_name: nil, extra_header_value: nil)
+          @homeserver = (homeserver || "").sub(%r{/*$}, "")
+          @access_token = access_token
+          @extra_header_name = extra_header_name.presence
+          @extra_header_value = extra_header_value.presence
+        end
+
+        def send_text(room_id:, body:, txn_id: nil)
+          txn_id ||= "discourse-#{SecureRandom.uuid}"
+          path = "/_matrix/client/v3/rooms/#{CGI.escape(room_id)}/send/m.room.message/#{txn_id}"
+          payload = { msgtype: "m.text", body: body }
+          request(:put, path, payload)
+        end
+
+        def sync(since: nil, timeout_ms: 30_000)
+          params = { timeout: timeout_ms }
+          params[:since] = since if since
+          path = "/_matrix/client/v3/sync?#{URI.encode_www_form(params)}"
+          request(:get, path)
+        end
+
+        private
+
+        def request(method, path, body = nil)
+          return {} if @homeserver.blank?
+
+          uri = URI.parse("#{@homeserver}#{path}")
+          http = Net::HTTP.new(uri.host, uri.port)
+          http.use_ssl = uri.scheme == "https"
+
+          req_class =
+            case method
+            when :get
+              Net::HTTP::Get
+            when :put
+              Net::HTTP::Put
+            when :post
+              Net::HTTP::Post
+            else
+              raise ArgumentError, "Unsupported HTTP method: #{method}"
+            end
+
+          req = req_class.new(uri.request_uri)
+          req["Authorization"] = "Bearer #{@access_token}" if @access_token.present?
+
+          if @extra_header_name && @extra_header_value
+            req[@extra_header_name] = @extra_header_value
+          end
+
+          if body
+            req["Content-Type"] = "application/json"
+            req.body = JSON.dump(body)
+          end
+
+          response = http.request(req)
+
+          if response.code.to_i >= 400
+            Rails.logger.warn(
+              "[discourse-matrix] #{method.to_s.upcase} #{uri} failed: #{response.code} #{response.body}",
+            )
+          end
+
+          JSON.parse(response.body) rescue {}
+        rescue => e
+          Rails.logger.warn("[discourse-matrix] request error: #{e.class} #{e.message}")
+          {}
+        end
+      end
+    end
+
+    module ::Jobs
+      class MatrixSendMessage < ::Jobs::Base
+        def execute(args)
+          return if !SiteSetting.matrix_bridge_enabled
+
+          message = ::Chat::Message.find_by(id: args[:message_id])
+          return if message.blank?
+
+          channel = message.channel
+          user = message.user
+          bridge_user = ::DiscourseMatrix::Bridge.bridge_user
+          return if bridge_user.blank?
+
+          mapping = ::DiscourseMatrix::Bridge.find_mapping_for_channel_id(channel.id)
+          return if mapping.blank?
+
+          prefix = "[#{user.username}]: "
+          body = prefix + message.message.to_s
+
+          client = ::DiscourseMatrix::Bridge.matrix_client
+          client.send_text(room_id: mapping["matrix_room_id"], body: body)
+        end
+      end
+    end
+
+    module ::Jobs
+      class MatrixSync < ::Jobs::Scheduled
+        every 1.minute
+
+        def execute(args)
+          return if !SiteSetting.matrix_bridge_enabled
+
+          client = ::DiscourseMatrix::Bridge.matrix_client
+          since = PluginStore.get(::DiscourseMatrix::PLUGIN_NAME, "matrix_sync_since")
+          resp = client.sync(since: since)
+
+          next_batch = resp["next_batch"]
+          rooms = resp.dig("rooms", "join") || {}
+
+          rooms.each do |room_id, room_data|
+            timeline = room_data.dig("timeline", "events") || []
+            timeline.each do |event|
+              handle_event(room_id, event)
+            end
+          end
+
+          if next_batch
+            PluginStore.set(::DiscourseMatrix::PLUGIN_NAME, "matrix_sync_since", next_batch)
+          end
+        end
+
+        private
+
+        def handle_event(room_id, event)
+          return unless event["type"] == "m.room.message"
+
+          content = event["content"] || {}
+          return unless content["msgtype"] == "m.text"
+
+          body = content["body"].to_s
+          sender = event["sender"] # e.g. "@alice:example.com"
+
+          # Avoid echo loop: ignore messages sent by the Matrix bot user itself
+          bridge_mx_userid = SiteSetting.matrix_bot_user_id.presence
+          return if bridge_mx_userid && sender == bridge_mx_userid
+
+          mapping = ::DiscourseMatrix::Bridge.find_mapping_for_room_id(room_id)
+          return if mapping.blank?
+
+          channel = ::Chat::Channel.find_by(id: mapping["chat_channel_id"].to_i)
+          return if channel.blank?
+
+          bridge_user = ::DiscourseMatrix::Bridge.bridge_user
+          return if bridge_user.blank?
+
+          full_body = "[#{sender}]: #{body}"
+
+          creator =
+            ::Chat::CreateMessage.call(
+              guardian: bridge_user.guardian,
+              params: {
+                chat_channel_id: channel.id,
+                message: full_body,
+              },
+            )
+
+          if creator.failure?
+            Rails.logger.warn "[discourse-matrix] failed to create chat message from Matrix: #{creator.inspect_steps}"
+          end
+        rescue => e
+          Rails.logger.warn "[discourse-matrix] error handling Matrix event: #{e.class} #{e.message}"
+        end
+      end
+    end
+
+    # Discourse Chat -> Matrix: hook into chat message creation
+    on(:chat_message_created) do |message, channel, user|
+      ::DiscourseMatrix::Bridge.enqueue_matrix_send(message, channel, user)
+    end
+  else
+    Rails.logger.warn "[discourse-matrix] Chat plugin not loaded; Matrix bridge will be inactive."
+  end
+end

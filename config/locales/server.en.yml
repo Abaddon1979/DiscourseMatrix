@@ -1,0 +1,10 @@
+en:
+  site_settings:
+    matrix_bridge_enabled: "Enable Matrix ↔ Discourse Chat bridge"
+    matrix_homeserver_base_url: "Matrix homeserver base URL (e.g. https://matrix.example.com)"
+    matrix_bot_access_token: "Matrix bot access token (for the bridge bot user)"
+    matrix_bot_user_id: "Matrix user ID of the bot (e.g. @bot:example.com)"
+    matrix_bridge_discourse_username: "Discourse username of the bridge bot user"
+    matrix_bridge_mappings: "JSON array mapping Matrix rooms to Discourse chat channels (e.g. [{\"matrix_room_id\": \"!roomid:example.com\", \"chat_channel_id\": 42}])"
+    matrix_extra_header_name: "Optional extra HTTP header name for Matrix requests"
+    matrix_extra_header_value: "Optional extra HTTP header value for Matrix requests"

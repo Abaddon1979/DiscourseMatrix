@@ -1,0 +1,35 @@
+plugins:
+  matrix_bridge_enabled:
+    default: false
+    client: true
+    type: bool
+  matrix_homeserver_base_url:
+    default: ""
+    client: false
+    type: text
+  matrix_bot_access_token:
+    default: ""
+    client: false
+    type: text
+    secret: true
+  matrix_bot_user_id:
+    default: ""
+    client: false
+    type: text
+  matrix_bridge_discourse_username:
+    default: "matrix-bot"
+    client: false
+    type: text
+  matrix_bridge_mappings:
+    default: "[]"
+    client: false
+    type: text
+  matrix_extra_header_name:
+    default: ""
+    client: false
+    type: text
+  matrix_extra_header_value:
+    default: ""
+    client: false
+    type: text
+    secret: true
