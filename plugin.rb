@@ -285,9 +285,8 @@ after_initialize do
           end
           Rails.logger.info "[discourse-matrix] Found bridge user: #{bridge_user.username}"
 
-          # Insert a Zero Width Space after the '@' to prevent Discourse from parsing it as a mention
-          safe_sender = sender.sub("@", "@\u200B")
-          full_body = "[#{safe_sender}]: #{body}"
+          # Wrap the sender in backticks to prevent Discourse from parsing it as a mention (code block style)
+          full_body = "[`#{sender}`]: #{body}"
 
           # Ensure bridge user is a member of the channel
           # Category channels (public) are handled differently than DM/Private channels
