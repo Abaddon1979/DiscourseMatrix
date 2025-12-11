@@ -248,6 +248,10 @@ after_initialize do
                  body = "[#{content['body']}](#{http_url})"
               end
             end
+          
+          # Check if m.text body is a direct image link (e.g. Tenor GIF) and force image markdown
+          elsif msgtype == "m.text" && body =~ /^https?:\/\/.+\.(gif|png|jpg|jpeg|webp)$/i
+             body = "![Image](#{body})"
           end
           
           sender = event["sender"] # e.g. "@alice:example.com"
@@ -285,8 +289,9 @@ after_initialize do
           end
           Rails.logger.info "[discourse-matrix] Found bridge user: #{bridge_user.username}"
 
-          # Wrap the sender in backticks to prevent Discourse from parsing it as a mention (code block style)
-          full_body = "[`#{sender}`]: #{body}"
+          # Remove the '@' from the sender to prevent mentions (bulletproof method)
+          safe_sender = sender.sub("@", "")
+          full_body = "[#{safe_sender}]: #{body}"
 
           # Ensure bridge user is a member of the channel
           # Category channels (public) are handled differently than DM/Private channels
